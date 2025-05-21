@@ -44,12 +44,14 @@
 #define BIGINT_ASSUME_ASSERT(x) BIGINT_ASSERT(x)
 #endif // NDEBUG
 
-#define BIGINT_UNIMPL() \
-  do { \
-    std::cerr << "Unimplemented: " << __FILE__ << ":" << __LINE__ << std::endl; \
-    std::abort(); \
+#define BIGINT_UNIMPL()                                                        \
+  do {                                                                         \
+    std::cerr << "Unimplemented: " << __FILE__ << ":" << __LINE__              \
+              << std::endl;                                                    \
+    std::abort();                                                              \
   } while (0)
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <initializer_list>
@@ -58,6 +60,15 @@
 
 class bigint_t {
 private:
+  // Some conventions about this bigint implementation:
+  // - The limbs are stored in little-endian order.
+  // - "true" in the sign-bit corresponds to negative numbers.
+  // - Every bigint will always have at least one limb--including the number
+  //    zero.
+  // - Negative zero is not allowed.
+  // - Sign-bit and local-buffer-bit are stored as flags in the lower bits of
+  //    the capacity_ field. See the comment in capacity_ for more details.
+
   // A limb refers to a single machine word used to store a part of the number.
   // The term is borrowed from the GMP library
   // (https://gmplib.org/manual/Nomenclature-and-Types).
@@ -73,13 +84,19 @@ private:
   static constexpr size_t kFlagBitsMask = kSignBit | kUseLocalBufBit;
   static constexpr size_t kCapacityGranularity = 4;
 
+  BIGINT_INLINE static constexpr bool IsAligned(size_t n) {
+    static_assert((kCapacityGranularity & (kCapacityGranularity - 1)) == 0);
+    return (n & (kCapacityGranularity - 1)) == 0;
+  }
+
   // Aligns the given size to the next multiple of kCapacityGranularity.
   BIGINT_INLINE static constexpr size_t AlignUp(size_t n) {
     static_assert((kCapacityGranularity & (kCapacityGranularity - 1)) == 0);
     return (n + kCapacityGranularity - 1) & ~(kCapacityGranularity - 1);
   }
 
-  BIGINT_INLINE static constexpr bool AddOverflow(LimbT a, LimbT b, LimbT &res) {
+  BIGINT_INLINE static constexpr bool AddOverflow(LimbT a, LimbT b,
+                                                  LimbT &res) {
 #ifdef __GNUC__
     return __builtin_add_overflow(a, b, &res);
 #else
@@ -93,60 +110,38 @@ public:
 
   // NOLINTNEXTLINE(google-explicit-constructor)
   BIGINT_INLINE /* implicit */ bigint_t(LimbT n, bool sign = false) {
-    capacity_ = sign ? kSignBit : 0;
-    if constexpr (kLocalBufEnabled) {
-      capacity_ |= (1 << kFlagBitsCount) | kUseLocalBufBit;
-    } else {
-      capacity_ |= kCapacityGranularity;
-      data_ = new LimbT[kCapacityGranularity];
-      size_ = 1;
-    }
-    At(0) = n;
+    InitByCopy(&n, 1, sign);
   }
 
-  bigint_t(std::initializer_list<LimbT> l, bool sign) {
-    capacity_ = sign ? kSignBit : 0;
-    if (l.size() < kLocalBufSize) {
-      capacity_ |= (l.size() << kFlagBitsCount) | kUseLocalBufBit;
-    } else {
-      size_t alignedCapacity = bigint_t::AlignUp(l.size());
-      capacity_ |= alignedCapacity;
-      data_ = new LimbT[alignedCapacity];
-      size_ = l.size();
-    }
+  BIGINT_INLINE bigint_t(const bigint_t &other) {
+    InitByCopy(other.Data(), other.Size(), other.Sign());
+  }
 
-    size_t i = 0;
-    for (LimbT n : l) {
-      At(i++) = n;
+  BIGINT_INLINE bigint_t(bigint_t &&other) noexcept {
+    InitByMove(other.Data(), other.Size(), other.Capacity(), other.Sign());
+
+    // Invalidate the moved-from object.
+    //
+    // If we are using a heap buffer, we need to set the data pointer to
+    // nullptr. No need to check if we are using the local buffer, as this is
+    // still a valid statement.
+    other.u_.data_ = nullptr;
+    other.u_.size_ = 0;
+    other.capacity_ = 0;
+  }
+
+  bigint_t &operator=(bigint_t other) {
+    swap(*this, other);
+    return *this;
+  }
+
+  ~bigint_t() noexcept {
+    if (!UseLocalBuf()) {
+      delete[] u_.data_;
     }
   }
 
   BIGINT_INLINE explicit operator LimbT() const { return At(0); }
-
-  bigint_t operator+(const bigint_t &other) const {
-    if (Size() == 1 && other.Size() == 1) {
-      // Fast path: both numbers have a single limb.
-      LimbT a = At(0);
-      LimbT b = other.At(0);
-      if (Sign() == other.Sign()) {
-        LimbT res;
-        bool overflow = AddOverflow(a, b, res);
-        if (BIGINT_LIKELY(!overflow)) {
-          return bigint_t{res, Sign()};
-        } else {
-          return bigint_t{{1, res}, Sign()};
-        }
-      } else if (a > b) {
-        return bigint_t{a - b, Sign()};
-      } else if (b > a) {
-        return bigint_t{b - a, other.Sign()};
-      } else {
-        return bigint_t{0};
-      }
-    } else {
-      BIGINT_UNIMPL();
-    }
-  }
 
   [[nodiscard]] std::string ToString() const {
     if (Size() == 1) {
@@ -164,6 +159,7 @@ public:
       ss << "-";
     }
     ss << "0x";
+
     size_t size = Size();
     for (size_t i = 0; i < size; ++i) {
       ss << std::hex << At(size - 1 - i);
@@ -185,7 +181,48 @@ private:
       LimbT *data_;
       size_t size_;
     };
-  };
+  } u_;
+
+  BIGINT_INLINE bigint_t(std::initializer_list<LimbT> l, bool sign) {
+    InitByCopy(l.begin(), l.size(), sign);
+  }
+
+  // Initializes the bigint_t object by copying the data from the given pointer.
+  void InitByCopy(const LimbT *data, size_t size, bool sign) {
+    capacity_ = sign ? kSignBit : 0;
+    if (size < kLocalBufSize) {
+      capacity_ |= (size << kFlagBitsCount) | kUseLocalBufBit;
+      std::copy_n(data, size, u_.local_buf_);
+    } else {
+      size_t alignedCapacity = AlignUp(size);
+      u_.data_ = new LimbT[alignedCapacity];
+      u_.size_ = size;
+      capacity_ |= alignedCapacity;
+      std::copy_n(data, size, u_.data_);
+    }
+    DebugSanityCheck();
+  }
+
+  // Initializes the bigint_t object by moving the data from the given pointer.
+  //
+  // NB: bigint_t takes ownership of the data pointer.
+  void InitByMove(LimbT *data, size_t size, size_t capacity, bool sign) {
+    capacity_ = sign ? kSignBit : 0;
+    if (size < kLocalBufSize) {
+      capacity_ |= (size << kFlagBitsCount) | kUseLocalBufBit;
+      std::copy_n(data, size, u_.local_buf_);
+
+      // We have taken ownership of the data pointer, but we are using the local
+      // buffer. We need to delete the data pointer.
+      delete[] data;
+    } else {
+      BIGINT_ASSERT(bigint_t::IsAligned(capacity));
+      u_.data_ = data;
+      u_.size_ = size;
+      capacity_ |= capacity;
+    }
+    DebugSanityCheck();
+  }
 
   [[nodiscard]] BIGINT_INLINE constexpr bool Sign() const {
     return capacity_ & kSignBit;
@@ -211,11 +248,11 @@ private:
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr const LimbT *Data() const {
-    return UseLocalBuf() ? local_buf_ : data_;
+    return UseLocalBuf() ? u_.local_buf_ : u_.data_;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr LimbT *Data() {
-    return UseLocalBuf() ? local_buf_ : data_;
+    return UseLocalBuf() ? u_.local_buf_ : u_.data_;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr size_t Size() const {
@@ -224,7 +261,7 @@ private:
       BIGINT_ASSUME_ASSERT(0 < size && size < kLocalBufSize);
       return size;
     } else {
-      size_t size = size_;
+      size_t size = u_.size_;
       BIGINT_ASSUME_ASSERT(size >= kLocalBufSize);
       return size;
     }
@@ -238,6 +275,22 @@ private:
   [[nodiscard]] BIGINT_INLINE constexpr LimbT &At(size_t i) {
     BIGINT_ASSUME_ASSERT(i < Size());
     return Data()[i];
+  }
+
+  BIGINT_INLINE void Swap(bigint_t &other) noexcept {
+    using std::swap;
+    swap(capacity_, other.capacity_);
+    swap(u_, other.u_);
+  }
+
+  friend void swap(bigint_t &a, bigint_t &b) noexcept { a.Swap(b); }
+
+  BIGINT_INLINE void DebugSanityCheck() const {
+    // Disallow empty limb arrays.
+    BIGINT_ASSERT(Size() > 0);
+
+    // Disallow negative zero.
+    BIGINT_ASSERT(!(Size() == 1 && At(0) == 0 && Sign()));
   }
 };
 
