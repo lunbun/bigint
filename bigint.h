@@ -66,34 +66,27 @@ private:
   // - Every bigint will always have at least one limb--including the number
   //    zero.
   // - Negative zero is not allowed.
-  // - Sign-bit and local-buffer-bit are stored as flags in the lower bits of
-  //    the capacity_ field. See the comment in capacity_ for more details.
+  // - Sign-bit is stored as flags in the most significant bit of the size_
+  //    field. See the comment in size_ for more details.
+  // - Local-buffer optimization shall always be in use if the size of the
+  //    number is less than the size of the local buffer.
 
   // A limb refers to a single machine word used to store a part of the number.
   // The term is borrowed from the GMP library
   // (https://gmplib.org/manual/Nomenclature-and-Types).
   using LimbT = uint64_t;
 
+  static constexpr size_t kSizeBitCount = sizeof(size_t) * 8;
+
   static constexpr size_t kLocalBufSize = 16 / sizeof(LimbT);
   static constexpr bool kLocalBufEnabled = kLocalBufSize > 0;
 
-  // See the comment in capacity_ for the meaning of these values.
-  static constexpr size_t kSignBit = 1 << 0;
-  static constexpr size_t kUseLocalBufBit = 1 << 1;
-  static constexpr size_t kFlagBitsCount = 2;
-  static constexpr size_t kFlagBitsMask = kSignBit | kUseLocalBufBit;
-  static constexpr size_t kCapacityGranularity = 4;
+  static constexpr size_t kSignBit = 1 << (kSizeBitCount - 1);
 
-  BIGINT_INLINE static constexpr bool IsAligned(size_t n) {
-    static_assert((kCapacityGranularity & (kCapacityGranularity - 1)) == 0);
-    return (n & (kCapacityGranularity - 1)) == 0;
-  }
-
-  // Aligns the given size to the next multiple of kCapacityGranularity.
-  BIGINT_INLINE static constexpr size_t AlignUp(size_t n) {
-    static_assert((kCapacityGranularity & (kCapacityGranularity - 1)) == 0);
-    return (n + kCapacityGranularity - 1) & ~(kCapacityGranularity - 1);
-  }
+  // kFlagBitsMask is used to mask out any flag bits in the size_ field.
+  // Currently, only the sign bit is used, but this is here in case any other
+  // flag bits are needed in the future.
+  static constexpr size_t kFlagBitsMask = kSignBit;
 
   BIGINT_INLINE static constexpr bool AddOverflow(LimbT a, LimbT b,
                                                   LimbT &res) {
@@ -126,8 +119,8 @@ public:
     // nullptr. No need to check if we are using the local buffer, as this is
     // still a valid statement.
     other.u_.data_ = nullptr;
-    other.u_.size_ = 0;
-    other.capacity_ = 0;
+    other.u_.capacity_ = 0;
+    other.size_ = 0;
   }
 
   bigint_t &operator=(bigint_t other) {
@@ -168,18 +161,14 @@ public:
   }
 
 private:
-  // Bit 0 (least significant) is used to indicate the sign of the number.
-  // Bit 1 is used to indicate whether local-buffer optimization is used.
-  //  If local-buffer optimization is used, then the upper remaining bits of
-  //  capacity_ are used to store size_.
-  // NB: Capacity must always be a multiple of kCapacityGranularity.
-  size_t capacity_;
+  // Most significant bit is used to indicate the sign of the number.
+  size_t size_;
 
   union {
     LimbT local_buf_[kLocalBufSize];
     struct {
       LimbT *data_;
-      size_t size_;
+      size_t capacity_;
     };
   } u_;
 
@@ -189,15 +178,12 @@ private:
 
   // Initializes the bigint_t object by copying the data from the given pointer.
   void InitByCopy(const LimbT *data, size_t size, bool sign) {
-    capacity_ = sign ? kSignBit : 0;
+    size_ = size | (sign ? kSignBit : 0);
     if (size < kLocalBufSize) {
-      capacity_ |= (size << kFlagBitsCount) | kUseLocalBufBit;
       std::copy_n(data, size, u_.local_buf_);
     } else {
-      size_t alignedCapacity = AlignUp(size);
-      u_.data_ = new LimbT[alignedCapacity];
-      u_.size_ = size;
-      capacity_ |= alignedCapacity;
+      u_.data_ = new LimbT[size];
+      u_.capacity_ = size;
       std::copy_n(data, size, u_.data_);
     }
     DebugSanityCheck();
@@ -207,41 +193,33 @@ private:
   //
   // NB: bigint_t takes ownership of the data pointer.
   void InitByMove(LimbT *data, size_t size, size_t capacity, bool sign) {
-    capacity_ = sign ? kSignBit : 0;
+    size_ = size | (sign ? kSignBit : 0);
     if (size < kLocalBufSize) {
-      capacity_ |= (size << kFlagBitsCount) | kUseLocalBufBit;
       std::copy_n(data, size, u_.local_buf_);
 
       // We have taken ownership of the data pointer, but we are using the local
       // buffer. We need to delete the data pointer.
       delete[] data;
     } else {
-      BIGINT_ASSERT(bigint_t::IsAligned(capacity));
       u_.data_ = data;
-      u_.size_ = size;
-      capacity_ |= capacity;
+      u_.capacity_ = capacity;
     }
     DebugSanityCheck();
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr bool Sign() const {
-    return capacity_ & kSignBit;
+    return (size_ & kSignBit) != 0;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr bool UseLocalBuf() const {
-    if constexpr (!kLocalBufEnabled) {
-      BIGINT_ASSERT(!(capacity_ & kUseLocalBufBit));
-      return false;
-    } else {
-      return capacity_ & kUseLocalBufBit;
-    }
+    return Size() < kLocalBufSize;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr size_t Capacity() const {
     if (UseLocalBuf()) {
       return kLocalBufSize;
     } else {
-      size_t capacity = capacity_ & ~kFlagBitsMask;
+      size_t capacity = u_.capacity_;
       BIGINT_ASSUME_ASSERT(capacity >= kLocalBufSize);
       return capacity;
     }
@@ -256,15 +234,7 @@ private:
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr size_t Size() const {
-    if (UseLocalBuf()) {
-      size_t size = capacity_ >> kFlagBitsCount;
-      BIGINT_ASSUME_ASSERT(0 < size && size < kLocalBufSize);
-      return size;
-    } else {
-      size_t size = u_.size_;
-      BIGINT_ASSUME_ASSERT(size >= kLocalBufSize);
-      return size;
-    }
+    return size_ & ~kFlagBitsMask;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr const LimbT &At(size_t i) const {
@@ -279,7 +249,7 @@ private:
 
   BIGINT_INLINE void Swap(bigint_t &other) noexcept {
     using std::swap;
-    swap(capacity_, other.capacity_);
+    swap(size_, other.size_);
     swap(u_, other.u_);
   }
 
