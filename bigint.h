@@ -44,12 +44,14 @@
 #define BIGINT_ASSUME_ASSERT(x) BIGINT_ASSERT(x)
 #endif // NDEBUG
 
-#define BIGINT_UNIMPL()                                                        \
+#define BIGINT_PANIC(msg)                                                      \
   do {                                                                         \
-    std::cerr << "Unimplemented: " << __FILE__ << ":" << __LINE__              \
+    std::cerr << "Panic: " << msg << " at " << __FILE__ << ":" << __LINE__     \
               << std::endl;                                                    \
     std::abort();                                                              \
   } while (0)
+
+#define BIGINT_UNIMPL() BIGINT_PANIC("Unimplemented")
 
 #include <algorithm>
 #include <cassert>
@@ -81,12 +83,15 @@ private:
   static constexpr size_t kLocalBufSize = 16 / sizeof(LimbT);
   static constexpr bool kLocalBufEnabled = kLocalBufSize > 0;
 
-  static constexpr size_t kSignBit = 1 << (kSizeBitCount - 1);
+  static constexpr size_t kSignBit = static_cast<size_t>(1)
+                                     << (kSizeBitCount - 1);
 
   // kFlagBitsMask is used to mask out any flag bits in the size_ field.
   // Currently, only the sign bit is used, but this is here in case any other
   // flag bits are needed in the future.
   static constexpr size_t kFlagBitsMask = kSignBit;
+
+  static constexpr size_t kMaxSize = kFlagBitsMask - 1;
 
   BIGINT_INLINE static constexpr bool AddOverflow(LimbT a, LimbT b,
                                                   LimbT &res) {
@@ -129,12 +134,84 @@ public:
   }
 
   ~bigint_t() noexcept {
-    if (!UseLocalBuf()) {
+    if (UseHeapBuf()) {
       delete[] u_.data_;
     }
   }
 
   BIGINT_INLINE explicit operator LimbT() const { return At(0); }
+
+  bigint_t &operator+=(const bigint_t &other) {
+    if (Size() == 1 && other.Size() == 1) {
+      // Fast path: single-limb addition.
+      LimbT a = At(0);
+      LimbT b = other.At(0);
+      if (Sign() == other.Sign()) {
+        bool carry = AddOverflow(a, b, At(0));
+        if (BIGINT_UNLIKELY(carry)) {
+          PushBack(1);
+        }
+        return *this;
+      } else if (a > b) {
+        At(0) = a - b;
+        return *this;
+      } else if (a < b) {
+        At(0) = b - a;
+        SetSign(other.Sign());
+        return *this;
+      } else {
+        // a == b
+        At(0) = 0;
+        SetSign(false);
+        return *this;
+      }
+    } else {
+      // Slow path: multi-limb addition.
+      BIGINT_UNIMPL();
+    }
+  }
+
+  bigint_t &operator-=(const bigint_t &other) {
+    if (Size() == 1 && other.Size() == 1) {
+      // Fast path: single-limb subtraction.
+      LimbT a = At(0);
+      LimbT b = other.At(0);
+      if (Sign() != other.Sign()) {
+        bool carry = AddOverflow(a, b, At(0));
+        if (BIGINT_UNLIKELY(carry)) {
+          PushBack(1);
+        }
+        return *this;
+      } else if (a > b) {
+        At(0) = a - b;
+        return *this;
+      } else if (a < b) {
+        At(0) = b - a;
+        SetSign(!other.Sign());
+        return *this;
+      } else {
+        // a == b
+        At(0) = 0;
+        SetSign(false);
+        return *this;
+      }
+    } else {
+      // Slow path: multi-limb subtraction.
+      BIGINT_UNIMPL();
+    }
+  }
+
+  bigint_t operator+(const bigint_t &other) const {
+    bigint_t result = *this;
+    result += other;
+    return result;
+  }
+
+  bigint_t operator-(const bigint_t &other) const {
+    bigint_t result = *this;
+    result -= other;
+    return result;
+  }
 
   [[nodiscard]] std::string ToString() const {
     if (Size() == 1) {
@@ -207,12 +284,53 @@ private:
     DebugSanityCheck();
   }
 
+  void PushBack(LimbT n) {
+    size_t oldSize = Size();
+    if (oldSize == kMaxSize) {
+      BIGINT_PANIC("Size exceeded maximum size.");
+    }
+
+    size_t oldCapacity = Capacity();
+    size_t newSize = oldSize + 1;
+    if (newSize < oldCapacity) {
+      Data()[oldSize] = n;
+    } else {
+      // In this case, we will always need to do a heap allocation; we will
+      // never need to use the local buffer here. Even if the bigint_t was
+      // previously using a local buffer, if we got here, it means
+      // that we have exceeded the local buffer size.
+      size_t newCapacity = oldCapacity;
+      do {
+        newCapacity *= 2;
+      } while (newCapacity < newSize);
+
+      LimbT *newData = new LimbT[newCapacity];
+      std::copy_n(Data(), oldSize, newData);
+
+      if (UseHeapBuf()) {
+        delete[] u_.data_;
+      }
+
+      u_.data_ = newData;
+      u_.capacity_ = newCapacity;
+    }
+    SetSize(newSize);
+  }
+
   [[nodiscard]] BIGINT_INLINE constexpr bool Sign() const {
     return (size_ & kSignBit) != 0;
   }
 
+  BIGINT_INLINE void SetSign(bool sign) {
+    size_ = (size_ & ~kSignBit) | (sign ? kSignBit : 0);
+  }
+
   [[nodiscard]] BIGINT_INLINE constexpr bool UseLocalBuf() const {
     return Size() < kLocalBufSize;
+  }
+
+  [[nodiscard]] BIGINT_INLINE constexpr bool UseHeapBuf() const {
+    return !UseLocalBuf();
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr size_t Capacity() const {
@@ -235,6 +353,10 @@ private:
 
   [[nodiscard]] BIGINT_INLINE constexpr size_t Size() const {
     return size_ & ~kFlagBitsMask;
+  }
+
+  BIGINT_INLINE void SetSize(size_t size) {
+    size_ = size | (size_ & kFlagBitsMask);
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr const LimbT &At(size_t i) const {

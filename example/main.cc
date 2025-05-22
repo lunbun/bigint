@@ -4,5 +4,5 @@
 
 int main() {
     bigint_t a = 1;
-    std::cout << "a = " << (a + 1).ToHexString() << std::endl;
+    std::cout << "a = " << (a - 1).ToHexString() << std::endl;
 }
