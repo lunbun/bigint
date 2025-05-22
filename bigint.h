@@ -306,6 +306,7 @@ private:
 
       LimbT *newData = new LimbT[newCapacity];
       std::copy_n(Data(), oldSize, newData);
+      newData[oldSize] = n;
 
       if (UseHeapBuf()) {
         delete[] u_.data_;
