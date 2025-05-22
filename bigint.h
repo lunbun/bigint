@@ -66,6 +66,12 @@
 #include <initializer_list>
 #include <sstream>
 #include <string>
+#include <type_traits>
+
+#ifdef __has_include(<immintrin.h>)
+#include <immintrin.h>
+#define BIGINT_HAS_IMMINTRIN_H
+#endif // __has_include(<immintrin.h>)
 
 class bigint_t {
 private:
@@ -82,6 +88,7 @@ private:
   // The term is borrowed from the GMP library
   // (https://gmplib.org/manual/Nomenclature-and-Types).
   using LimbT = uint64_t;
+  using SignedLimbT = std::make_signed_t<LimbT>;
 
   static constexpr size_t kSizeBitCount = sizeof(size_t) * 8;
 
@@ -98,21 +105,40 @@ private:
 
   static constexpr size_t kMaxSize = kFlagBitsMask - 1;
 
-  BIGINT_INLINE static constexpr bool AddOverflow(LimbT a, LimbT b,
-                                                  LimbT &res) {
-#ifdef __GNUC__
-    return __builtin_add_overflow(a, b, &res);
-#else
-    res = a + b;
-    return (res < a) || (res < b);
-#endif // __GNUC__
+  BIGINT_INLINE static bool AddCarry(LimbT a, LimbT b, bool carry, LimbT *res) {
+#ifdef BIGINT_HAS_IMMINTRIN_H
+    if constexpr (std::is_same_v<LimbT, uint64_t>) {
+      return _addcarryx_u64(carry, a, b, reinterpret_cast<uint64_t *>(res));
+    } else if constexpr (std::is_same_v<LimbT, uint32_t>) {
+      return _addcarryx_u32(carry, a, b, reinterpret_cast<uint32_t *>(res));
+    }
+#endif // BIGINT_HAS_IMMINTRIN_H
+    BIGINT_UNIMPL();
+  }
+
+  BIGINT_INLINE static bool SubBorrow(LimbT a, LimbT b, bool borrow,
+                                      LimbT *res) {
+#ifdef BIGINT_HAS_IMMINTRIN_H
+    if constexpr (std::is_same_v<LimbT, uint64_t>) {
+      return _subborrow_u64(borrow, a, b, reinterpret_cast<uint64_t *>(res));
+    } else if constexpr (std::is_same_v<LimbT, uint32_t>) {
+      return _subborrow_u32(borrow, a, b, reinterpret_cast<uint32_t *>(res));
+    }
+#endif // BIGINT_HAS_IMMINTRIN_H
+    BIGINT_UNIMPL();
   }
 
 public:
   bigint_t() : bigint_t(0) {}
 
   // NOLINTNEXTLINE(google-explicit-constructor)
-  BIGINT_INLINE /* implicit */ bigint_t(LimbT n, bool sign = false) {
+  BIGINT_INLINE /* implicit */ bigint_t(SignedLimbT n) {
+    LimbT tmp = std::abs(n);
+    InitByCopy(&tmp, 1, n < 0);
+  }
+
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  BIGINT_INLINE /* implicit */ bigint_t(LimbT n, bool sign) {
     InitByCopy(&n, 1, sign);
   }
 
@@ -146,64 +172,45 @@ public:
 
   BIGINT_INLINE explicit operator LimbT() const { return At(0); }
 
+  BIGINT_INLINE void Negate() { SetSign(!Sign()); }
+
+  bool operator==(const bigint_t &other) const {
+    return Sign() == other.Sign() &&
+           CompareMagnitudes(other.Data(), other.Size()) ==
+               ComparisonResult::kEqual;
+  }
+
   bigint_t &operator+=(const bigint_t &other) {
-    if (Size() == 1 && other.Size() == 1) {
-      // Fast path: single-limb addition.
-      LimbT a = At(0);
-      LimbT b = other.At(0);
-      if (Sign() == other.Sign()) {
-        bool carry = AddOverflow(a, b, At(0));
-        if (BIGINT_UNLIKELY(carry)) {
-          PushBack(1);
-        }
+    if (Sign() == other.Sign()) {
+      AddMagnitudes(other.Data(), other.Size());
+      return *this;
+    } else {
+      ComparisonResult cmp = CompareMagnitudes(other.Data(), other.Size());
+      if (cmp == ComparisonResult::kGreaterThan) {
+        SubThisMagnitudes(other.Data(), other.Size());
         return *this;
-      } else if (a > b) {
-        At(0) = a - b;
-        return *this;
-      } else if (a < b) {
-        At(0) = b - a;
+      } else if (cmp == ComparisonResult::kLessThan) {
+        SubOtherMagnitudes(other.Data(), other.Size());
         SetSign(other.Sign());
         return *this;
       } else {
-        // a == b
+        ResizeToFit(1);
         At(0) = 0;
-        SetSign(false);
+        SetSign(true);
         return *this;
       }
-    } else {
-      // Slow path: multi-limb addition.
-      BIGINT_UNIMPL();
     }
   }
 
   bigint_t &operator-=(const bigint_t &other) {
-    if (Size() == 1 && other.Size() == 1) {
-      // Fast path: single-limb subtraction.
-      LimbT a = At(0);
-      LimbT b = other.At(0);
-      if (Sign() != other.Sign()) {
-        bool carry = AddOverflow(a, b, At(0));
-        if (BIGINT_UNLIKELY(carry)) {
-          PushBack(1);
-        }
-        return *this;
-      } else if (a > b) {
-        At(0) = a - b;
-        return *this;
-      } else if (a < b) {
-        At(0) = b - a;
-        SetSign(!other.Sign());
-        return *this;
-      } else {
-        // a == b
-        At(0) = 0;
-        SetSign(false);
-        return *this;
-      }
-    } else {
-      // Slow path: multi-limb subtraction.
-      BIGINT_UNIMPL();
-    }
+    // TODO: faster implementation
+    *this += -other;
+  }
+
+  bigint_t operator-() const {
+    bigint_t result = *this;
+    result.Negate();
+    return result;
   }
 
   bigint_t operator+(const bigint_t &other) const {
@@ -236,8 +243,8 @@ public:
     ss << "0x";
 
     size_t size = Size();
-    for (size_t i = 0; i < size; ++i) {
-      ss << std::hex << At(size - 1 - i);
+    for (size_t i = size; i-- > 0;) {
+      ss << std::hex << At(i);
     }
     return ss.str();
   }
@@ -377,6 +384,18 @@ private:
     SetSize(newSize);
   }
 
+  // Strips any leading zeroes from the number.
+  void Normalize() {
+    size_t newSize = Size();
+    if (newSize <= 1 || At(newSize - 1) != 0) {
+      return;
+    }
+    do {
+      --newSize;
+    } while (newSize > 1 && At(newSize - 1) == 0);
+    SetSize(newSize);
+  }
+
   void PushBack(LimbT n) {
     size_t oldSize = Size();
     if (oldSize == kMaxSize) {
@@ -385,6 +404,86 @@ private:
 
     ResizeToFit(oldSize + 1);
     At(oldSize) = n;
+  }
+
+  enum class ComparisonResult : uint8_t {
+    kLessThan,
+    kEqual,
+    kGreaterThan,
+  };
+
+  // kLessThan means |this| < |other|.
+  // kEqual means |this| == |other|.
+  // kGreaterThan means |this| > |other|.
+  ComparisonResult CompareMagnitudes(const LimbT *otherMag,
+                                     size_t otherSize) const {
+    size_t thisSize = Size();
+    if (thisSize > otherSize) {
+      return ComparisonResult::kGreaterThan;
+    } else if (thisSize < otherSize) {
+      return ComparisonResult::kLessThan;
+    }
+    for (size_t i = thisSize; i-- > 0;) {
+      LimbT a = At(i);
+      LimbT b = otherMag[i];
+      if (a > b) {
+        return ComparisonResult::kGreaterThan;
+      } else if (a < b) {
+        return ComparisonResult::kLessThan;
+      }
+    }
+    return ComparisonResult::kEqual;
+  }
+
+  // Performs |this| += |other|.
+  void AddMagnitudes(const LimbT *otherMag, size_t otherSize) {
+    size_t thisSize = Size();
+    size_t newSize = std::max(thisSize, otherSize) + 1;
+    ResizeToFit(newSize);
+    bool carry = false;
+    for (size_t i = 0; i < newSize; ++i) {
+      LimbT a = (i < thisSize) ? At(i) : 0;
+      LimbT b = (i < otherSize) ? otherMag[i] : 0;
+      LimbT res;
+      carry = AddCarry(a, b, carry, &res);
+      At(i) = res;
+    }
+    Normalize();
+  }
+
+  // Performs |this| -= |other|.
+  void SubThisMagnitudes(const LimbT *otherMag, size_t otherSize) {
+    // TODO: name this better
+    size_t thisSize = Size();
+    BIGINT_ASSUME_ASSERT(thisSize >= otherSize);
+    bool borrow = false;
+    for (size_t i = 0; i < thisSize; ++i) {
+      LimbT a = At(i);
+      LimbT b = (i < otherSize) ? otherMag[i] : 0;
+      LimbT res;
+      borrow = SubBorrow(a, b, borrow, &res);
+      At(i) = res;
+    }
+    BIGINT_ASSUME_ASSERT(!borrow);
+    Normalize();
+  }
+
+  // Performs |this| = |other| - |this|.
+  void SubOtherMagnitudes(const LimbT *otherMag, size_t otherSize) {
+    // TODO: name this better
+    size_t thisSize = Size();
+    BIGINT_ASSUME_ASSERT(otherSize >= thisSize);
+    ResizeToFit(otherSize);
+    bool borrow = false;
+    for (size_t i = 0; i < otherSize; ++i) {
+      LimbT a = otherMag[i];
+      LimbT b = (i < thisSize) ? At(i) : 0;
+      LimbT res;
+      borrow = SubBorrow(a, b, borrow, &res);
+      At(i) = res;
+    }
+    BIGINT_ASSUME_ASSERT(!borrow);
+    Normalize();
   }
 
   BIGINT_INLINE void Swap(bigint_t &other) noexcept {
