@@ -77,8 +77,6 @@ private:
   // - Negative zero is not allowed.
   // - Sign-bit is stored as flags in the most significant bit of the size_
   //    field. See the comment in size_ for more details.
-  // - Local-buffer optimization shall always be in use if the size of the
-  //    number is less than the size of the local buffer.
 
   // A limb refers to a single machine word used to store a part of the number.
   // The term is borrowed from the GMP library
@@ -92,11 +90,11 @@ private:
 
   static constexpr size_t kSignBit = static_cast<size_t>(1)
                                      << (kSizeBitCount - 1);
+  static constexpr size_t kLocalBufBit = static_cast<size_t>(1)
+                                         << (kSizeBitCount - 2);
 
   // kFlagBitsMask is used to mask out any flag bits in the size_ field.
-  // Currently, only the sign bit is used, but this is here in case any other
-  // flag bits are needed in the future.
-  static constexpr size_t kFlagBitsMask = kSignBit;
+  static constexpr size_t kFlagBitsMask = kSignBit | kLocalBufBit;
 
   static constexpr size_t kMaxSize = kFlagBitsMask - 1;
 
@@ -269,7 +267,7 @@ private:
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr bool UseLocalBuf() const {
-    return Size() < kLocalBufSize;
+    return (size_ & kLocalBufBit) != 0;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr bool UseHeapBuf() const {
@@ -316,6 +314,7 @@ private:
   void InitByCopy(const LimbT *data, size_t size, bool sign) {
     size_ = size | (sign ? kSignBit : 0);
     if (size < kLocalBufSize) {
+      size_ |= kLocalBufBit;
       std::copy_n(data, size, u_.local_buf_);
     } else {
       u_.data_ = new LimbT[size];
@@ -331,6 +330,7 @@ private:
   void InitByMove(LimbT *data, size_t size, size_t capacity, bool sign) {
     size_ = size | (sign ? kSignBit : 0);
     if (size < kLocalBufSize) {
+      size_ |= kLocalBufBit;
       std::copy_n(data, size, u_.local_buf_);
 
       // We have taken ownership of the data pointer, but we are using the local
@@ -348,7 +348,7 @@ private:
   void ResizeToFit(size_t newSize) {
     size_t oldSize = Size();
     size_t oldCapacity = Capacity();
-    if (oldCapacity < newSize) {
+    if (newSize > oldCapacity) {
       // In this case, we will always need to do a heap allocation; we will
       // never need to use the local buffer here. Even if the bigint_t was
       // previously using a local buffer, if we got here, it means
@@ -366,6 +366,7 @@ private:
         delete[] u_.data_;
       }
 
+      size_ &= ~kLocalBufBit;
       u_.data_ = newData;
       u_.capacity_ = newCapacity;
     }
