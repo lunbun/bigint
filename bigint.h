@@ -291,6 +291,11 @@ private:
 
     // Disallow negative zero.
     BIGINT_ASSERT(!(Size() == 1 && At(0) == 0 && Sign()));
+
+    // Disallow leading zeroes.
+    if (Size() > 1) {
+      BIGINT_ASSERT(At(Size() - 1) != 0);
+    }
   }
 };
 
