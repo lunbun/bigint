@@ -44,6 +44,13 @@
 #define BIGINT_ASSUME_ASSERT(x) BIGINT_ASSERT(x)
 #endif // NDEBUG
 
+#ifndef BIGINT_DEBUG
+#define BIGINT_DEBUG(msg)                                                      \
+  do {                                                                         \
+    std::cout << "Debug: " << msg << std::endl;                                \
+  } while (0)
+#endif // BIGINT_DEBUG
+
 #define BIGINT_PANIC(msg)                                                      \
   do {                                                                         \
     std::cerr << "Panic: " << msg << " at " << __FILE__ << ":" << __LINE__     \
@@ -253,71 +260,6 @@ private:
     InitByCopy(l.begin(), l.size(), sign);
   }
 
-  // Initializes the bigint_t object by copying the data from the given pointer.
-  void InitByCopy(const LimbT *data, size_t size, bool sign) {
-    size_ = size | (sign ? kSignBit : 0);
-    if (size < kLocalBufSize) {
-      std::copy_n(data, size, u_.local_buf_);
-    } else {
-      u_.data_ = new LimbT[size];
-      u_.capacity_ = size;
-      std::copy_n(data, size, u_.data_);
-    }
-    DebugSanityCheck();
-  }
-
-  // Initializes the bigint_t object by moving the data from the given pointer.
-  //
-  // NB: bigint_t takes ownership of the data pointer.
-  void InitByMove(LimbT *data, size_t size, size_t capacity, bool sign) {
-    size_ = size | (sign ? kSignBit : 0);
-    if (size < kLocalBufSize) {
-      std::copy_n(data, size, u_.local_buf_);
-
-      // We have taken ownership of the data pointer, but we are using the local
-      // buffer. We need to delete the data pointer.
-      delete[] data;
-    } else {
-      u_.data_ = data;
-      u_.capacity_ = capacity;
-    }
-    DebugSanityCheck();
-  }
-
-  void PushBack(LimbT n) {
-    size_t oldSize = Size();
-    if (oldSize == kMaxSize) {
-      BIGINT_PANIC("Size exceeded maximum size.");
-    }
-
-    size_t oldCapacity = Capacity();
-    size_t newSize = oldSize + 1;
-    if (newSize < oldCapacity) {
-      Data()[oldSize] = n;
-    } else {
-      // In this case, we will always need to do a heap allocation; we will
-      // never need to use the local buffer here. Even if the bigint_t was
-      // previously using a local buffer, if we got here, it means
-      // that we have exceeded the local buffer size.
-      size_t newCapacity = oldCapacity;
-      do {
-        newCapacity *= 2;
-      } while (newCapacity < newSize);
-
-      LimbT *newData = new LimbT[newCapacity];
-      std::copy_n(Data(), oldSize, newData);
-      newData[oldSize] = n;
-
-      if (UseHeapBuf()) {
-        delete[] u_.data_;
-      }
-
-      u_.data_ = newData;
-      u_.capacity_ = newCapacity;
-    }
-    SetSize(newSize);
-  }
-
   [[nodiscard]] BIGINT_INLINE constexpr bool Sign() const {
     return (size_ & kSignBit) != 0;
   }
@@ -370,6 +312,80 @@ private:
     return Data()[i];
   }
 
+  // Initializes the bigint_t object by copying the data from the given pointer.
+  void InitByCopy(const LimbT *data, size_t size, bool sign) {
+    size_ = size | (sign ? kSignBit : 0);
+    if (size < kLocalBufSize) {
+      std::copy_n(data, size, u_.local_buf_);
+    } else {
+      u_.data_ = new LimbT[size];
+      u_.capacity_ = size;
+      std::copy_n(data, size, u_.data_);
+    }
+    DebugSanityCheck();
+  }
+
+  // Initializes the bigint_t object by moving the data from the given pointer.
+  //
+  // NB: bigint_t takes ownership of the data pointer.
+  void InitByMove(LimbT *data, size_t size, size_t capacity, bool sign) {
+    size_ = size | (sign ? kSignBit : 0);
+    if (size < kLocalBufSize) {
+      std::copy_n(data, size, u_.local_buf_);
+
+      // We have taken ownership of the data pointer, but we are using the local
+      // buffer. We need to delete the data pointer.
+      delete[] data;
+    } else {
+      u_.data_ = data;
+      u_.capacity_ = capacity;
+    }
+    DebugSanityCheck();
+  }
+
+  // Ensures that the capacity of the bigint_t object is at least newSize, and
+  // sets the size to newSize.
+  void ResizeToFit(size_t newSize) {
+    size_t oldSize = Size();
+    size_t oldCapacity = Capacity();
+    if (oldCapacity < newSize) {
+      // In this case, we will always need to do a heap allocation; we will
+      // never need to use the local buffer here. Even if the bigint_t was
+      // previously using a local buffer, if we got here, it means
+      // that we have exceeded the local buffer size.
+      size_t newCapacity = oldCapacity;
+      do {
+        newCapacity *= 2;
+      } while (newCapacity < newSize);
+
+      BIGINT_DEBUG("Reallocating size=" << newSize
+                                        << ", capacity=" << newCapacity << ".");
+      LimbT *newData = new LimbT[newCapacity];
+      std::copy_n(Data(), oldSize, newData);
+      if (UseHeapBuf()) {
+        delete[] u_.data_;
+      }
+
+      u_.data_ = newData;
+      u_.capacity_ = newCapacity;
+    }
+
+    if (newSize > oldSize) {
+      std::fill_n(Data() + oldSize, newSize - oldSize, 0);
+    }
+    SetSize(newSize);
+  }
+
+  void PushBack(LimbT n) {
+    size_t oldSize = Size();
+    if (oldSize == kMaxSize) {
+      BIGINT_PANIC("Size exceeded maximum size.");
+    }
+
+    ResizeToFit(oldSize + 1);
+    At(oldSize) = n;
+  }
+
   BIGINT_INLINE void Swap(bigint_t &other) noexcept {
     using std::swap;
     swap(size_, other.size_);
@@ -389,6 +405,9 @@ private:
     if (Size() > 1) {
       BIGINT_ASSERT(At(Size() - 1) != 0);
     }
+
+    // Ensure that size is not larger than the capacity.
+    BIGINT_ASSERT(Size() <= Capacity());
   }
 };
 
