@@ -205,6 +205,7 @@ public:
   bigint_t &operator-=(const bigint_t &other) {
     // TODO: faster implementation
     *this += -other;
+    return *this;
   }
 
   bigint_t operator-() const {
