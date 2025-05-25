@@ -107,7 +107,7 @@ private:
 
   static constexpr size_t kMaxSize = kFlagBitsMask - 1;
 
-  BIGINT_INLINE static bool AddCarry(LimbT a, LimbT b, bool carry, LimbT *res) {
+  BIGINT_INLINE static bool IntrinsicAddCarry(LimbT a, LimbT b, bool carry, LimbT *res) {
 #ifdef BIGINT_HAS_IMMINTRIN_H
     if constexpr (std::is_same_v<LimbT, uint64_t>) {
       return _addcarryx_u64(carry, a, b, reinterpret_cast<uint64_t *>(res));
@@ -118,7 +118,7 @@ private:
     BIGINT_UNIMPL();
   }
 
-  BIGINT_INLINE static bool SubBorrow(LimbT a, LimbT b, bool borrow,
+  BIGINT_INLINE static bool IntrinsicSubBorrow(LimbT a, LimbT b, bool borrow,
                                       LimbT *res) {
 #ifdef BIGINT_HAS_IMMINTRIN_H
     if constexpr (std::is_same_v<LimbT, uint64_t>) {
@@ -130,7 +130,7 @@ private:
     BIGINT_UNIMPL();
   }
 
-  BIGINT_INLINE static LimbT MulOverflow(LimbT a, LimbT b, LimbT *low) {
+  BIGINT_INLINE static LimbT IntrinsicMulOverflow(LimbT a, LimbT b, LimbT *low) {
 #ifdef __GNUC__
     if constexpr (std::is_same_v<LimbT, uint64_t>) {
       __uint128_t r = static_cast<__uint128_t>(a) * static_cast<__uint128_t>(b);
@@ -269,7 +269,7 @@ public:
     for (size_t i = 0; i < Size(); i++) {
       for (size_t j = 0; j < other.Size(); j++) {
         LimbT tmp[2];
-        tmp[1] = MulOverflow(At(i), other.At(j), &tmp[0]);
+        tmp[1] = IntrinsicMulOverflow(At(i), other.At(j), &tmp[0]);
         result.AddMagnitudes(tmp, 2, i + j);
       }
     }
@@ -522,7 +522,7 @@ private:
       LimbT a = (i < thisSize) ? At(i) : 0;
       LimbT b = (i - otherShift < otherSize) ? otherMag[i - otherShift] : 0;
       LimbT res;
-      carry = AddCarry(a, b, carry, &res);
+      carry = IntrinsicAddCarry(a, b, carry, &res);
       At(i) = res;
     }
 
@@ -545,7 +545,7 @@ private:
       LimbT a = At(i);
       LimbT b = (i < otherSize) ? otherMag[i] : 0;
       LimbT res;
-      borrow = SubBorrow(a, b, borrow, &res);
+      borrow = IntrinsicSubBorrow(a, b, borrow, &res);
       At(i) = res;
     }
     BIGINT_ASSUME_ASSERT(!borrow);
@@ -563,7 +563,7 @@ private:
       LimbT a = otherMag[i];
       LimbT b = (i < thisSize) ? At(i) : 0;
       LimbT res;
-      borrow = SubBorrow(a, b, borrow, &res);
+      borrow = IntrinsicSubBorrow(a, b, borrow, &res);
       At(i) = res;
     }
     BIGINT_ASSUME_ASSERT(!borrow);
