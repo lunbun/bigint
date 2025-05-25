@@ -64,6 +64,7 @@
 #include <cassert>
 #include <cstdint>
 #include <initializer_list>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -253,6 +254,9 @@ public:
     size_t size = Size();
     for (size_t i = size; i-- > 0;) {
       ss << std::hex << At(i);
+      if (i == size - 1) {
+        ss << std::setfill('0') << std::setw(2 * sizeof(LimbT));
+      }
     }
     return ss.str();
   }
