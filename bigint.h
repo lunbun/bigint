@@ -130,6 +130,17 @@ private:
     BIGINT_UNIMPL();
   }
 
+  BIGINT_INLINE static LimbT MulOverflow(LimbT a, LimbT b, LimbT *low) {
+#ifdef __GNUC__
+    if constexpr (std::is_same_v<LimbT, uint64_t>) {
+      __uint128_t r = static_cast<__uint128_t>(a) * static_cast<__uint128_t>(b);
+      *low = static_cast<LimbT>(r);
+      return r >> 64;
+    }
+#endif
+    BIGINT_UNIMPL();
+  }
+
 public:
   bigint_t() : bigint_t(0) {}
 
@@ -220,6 +231,11 @@ public:
     return *this;
   }
 
+  bigint_t &operator*=(const bigint_t &other) {
+    *this = *this * other;
+    return *this;
+  }
+
   bigint_t operator-() const {
     bigint_t result = *this;
     result.Negate();
@@ -244,6 +260,22 @@ public:
   bigint_t operator-(const bigint_t &other) const {
     bigint_t result = *this;
     result -= other;
+    return result;
+  }
+
+  bigint_t operator*(const bigint_t &other) const {
+    bigint_t result;
+    result.ResizeToFit(Size() + other.Size());
+    for (size_t i = 0; i < Size(); i++) {
+      for (size_t j = 0; j < other.Size(); j++) {
+        LimbT tmp[2];
+        tmp[1] = MulOverflow(At(i), other.At(j), &tmp[0]);
+        result.AddMagnitudes(tmp, 2, i + j);
+      }
+    }
+    result.SetSign(Sign() != other.Sign());
+    result.Normalize();
+    result.DebugSanityCheck();
     return result;
   }
 
