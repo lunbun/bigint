@@ -279,6 +279,41 @@ public:
     return result;
   }
 
+  [[nodiscard]] static bigint_t FromString(const char *str, size_t len) {
+    if (len == 0) {
+      return bigint_t{0, false};
+    }
+
+    bigint_t result;
+    bool sign = false;
+    if (len > 0 && str[0] == '-') {
+      sign = true;
+      ++str;
+      --len;
+    }
+
+    for (size_t i = 0; i < len; ++i) {
+      char c = str[i];
+      if (c < '0' || c > '9') {
+        break;
+      }
+      if (i != 0) {
+        result *= 10;
+      }
+      result += static_cast<LimbT>(c - '0');
+    }
+
+    if (result.Size() != 1 || result.At(0) != 0) {
+      // If the result is non-zero, set the sign.
+      result.SetSign(sign);
+    }
+    return result;
+  }
+
+  [[nodiscard]] static bigint_t FromString(const std::string &str) {
+    return FromString(str.data(), str.size());
+  }
+
   [[nodiscard]] std::string ToString() const {
     if (Size() == 1) {
       // Fast path: single-limb number.
