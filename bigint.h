@@ -92,6 +92,7 @@ private:
   using SignedLimbT = std::make_signed_t<LimbT>;
 
   static constexpr size_t kSizeBitCount = sizeof(size_t) * 8;
+  static constexpr size_t kLimbBitCount = sizeof(LimbT) * 8;
 
   static constexpr size_t kLocalBufSize = 16 / sizeof(LimbT);
   static constexpr bool kLocalBufEnabled = kLocalBufSize > 0;
@@ -191,7 +192,7 @@ public:
 
   bigint_t &operator+=(const bigint_t &other) {
     if (Sign() == other.Sign()) {
-      AddMagnitudes(other.Data(), other.Size());
+      AddMagnitudes(other.Data(), other.Size(), 0);
       return *this;
     } else {
       ComparisonResult cmp = CompareMagnitudes(other.Data(), other.Size());
@@ -440,15 +441,19 @@ private:
     return ComparisonResult::kEqual;
   }
 
-  // Performs |this| += |other|.
-  void AddMagnitudes(const LimbT *otherMag, size_t otherSize) {
+  // Performs |this| += |other| << (otherShift * kLimbBitCount).
+  //
+  // No need to normalize after this operation, as it will never resize the
+  // bigint_t object to a larger size than it needs.
+  void AddMagnitudes(const LimbT *otherMag, size_t otherSize,
+                     size_t otherShift) {
     size_t thisSize = Size();
-    size_t newSize = std::max(thisSize, otherSize);
+    size_t newSize = std::max(thisSize, otherSize + otherShift);
     ResizeToFit(newSize);
     bool carry = false;
-    for (size_t i = 0; i < newSize; ++i) {
+    for (size_t i = otherShift; i < newSize; ++i) {
       LimbT a = (i < thisSize) ? At(i) : 0;
-      LimbT b = (i < otherSize) ? otherMag[i] : 0;
+      LimbT b = (i - otherShift < otherSize) ? otherMag[i - otherShift] : 0;
       LimbT res;
       carry = AddCarry(a, b, carry, &res);
       At(i) = res;
