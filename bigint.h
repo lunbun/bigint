@@ -30,7 +30,7 @@
 
 #ifdef __clang__
 #define BIGINT_ASSUME(x) __builtin_assume(x)
-#elifdef __GNUC__
+#elif defined(__GNUC__)
 // clang-format off
 #define BIGINT_ASSUME(x) do { if (!(x)) __builtin_unreachable(); } while (0)
 // clang-format on
@@ -69,7 +69,7 @@
 #include <string>
 #include <type_traits>
 
-#ifdef __has_include(<immintrin.h>)
+#if __has_include(<immintrin.h>)
 #include <immintrin.h>
 #define BIGINT_HAS_IMMINTRIN_H
 #endif // __has_include(<immintrin.h>)
@@ -164,8 +164,8 @@ public:
     if (other.UseLocalBuf()) {
       std::copy_n(other.u_.local_buf_, other.Size(), u_.local_buf_);
     } else {
-      u_.data_ = other.u_.data_;
-      u_.capacity_ = other.u_.capacity_;
+      u_.s_.data_ = other.u_.s_.data_;
+      u_.s_.capacity_ = other.u_.s_.capacity_;
     }
     DebugSanityCheck();
 
@@ -174,8 +174,8 @@ public:
     // If we are using a heap buffer, we need to set the data pointer to
     // nullptr. No need to check if we are using the local buffer, as this is
     // still a valid statement.
-    other.u_.data_ = nullptr;
-    other.u_.capacity_ = 0;
+    other.u_.s_.data_ = nullptr;
+    other.u_.s_.capacity_ = 0;
     other.size_ = 0;
   }
 
@@ -186,8 +186,8 @@ public:
 
   ~bigint_t() noexcept {
     if (UseHeapBuf()) {
-      delete[] u_.data_;
-      u_.data_ = nullptr;
+      delete[] u_.s_.data_;
+      u_.s_.data_ = nullptr;
     }
   }
 
@@ -350,7 +350,7 @@ private:
     struct {
       LimbT *data_;
       size_t capacity_;
-    };
+    } s_;
   } u_;
 
   BIGINT_INLINE bigint_t(std::initializer_list<LimbT> l, bool sign) {
@@ -377,18 +377,18 @@ private:
     if (UseLocalBuf()) {
       return kLocalBufSize;
     } else {
-      size_t capacity = u_.capacity_;
+      size_t capacity = u_.s_.capacity_;
       BIGINT_ASSUME_ASSERT(capacity >= kLocalBufSize);
       return capacity;
     }
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr const LimbT *Data() const {
-    return UseLocalBuf() ? u_.local_buf_ : u_.data_;
+    return UseLocalBuf() ? u_.local_buf_ : u_.s_.data_;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr LimbT *Data() {
-    return UseLocalBuf() ? u_.local_buf_ : u_.data_;
+    return UseLocalBuf() ? u_.local_buf_ : u_.s_.data_;
   }
 
   [[nodiscard]] BIGINT_INLINE constexpr size_t Size() const {
@@ -416,9 +416,9 @@ private:
       size_ |= kLocalBufBit;
       std::copy_n(data, size, u_.local_buf_);
     } else {
-      u_.data_ = new LimbT[size];
-      u_.capacity_ = size;
-      std::copy_n(data, size, u_.data_);
+      u_.s_.data_ = new LimbT[size];
+      u_.s_.capacity_ = size;
+      std::copy_n(data, size, u_.s_.data_);
     }
     DebugSanityCheck();
   }
@@ -443,12 +443,12 @@ private:
       LimbT *newData = new LimbT[newCapacity];
       std::copy_n(Data(), oldSize, newData);
       if (UseHeapBuf()) {
-        delete[] u_.data_;
+        delete[] u_.s_.data_;
       }
 
       size_ &= ~kLocalBufBit;
-      u_.data_ = newData;
-      u_.capacity_ = newCapacity;
+      u_.s_.data_ = newData;
+      u_.s_.capacity_ = newCapacity;
     }
 
     if (newSize > oldSize) {
