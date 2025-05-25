@@ -223,9 +223,18 @@ public:
   }
 
   bigint_t operator+(const bigint_t &other) const {
-    bigint_t result = *this;
-    result += other;
-    return result;
+    // It is faster to always copy the longer bigint_t first, as it can avoid a
+    // second reallocation. AddMagnitudes() must always grow the limb array to
+    // be the maximum of the two sizes, so might as well account for that here.
+    if (Size() > other.Size()) {
+      bigint_t result = *this;
+      result += other;
+      return result;
+    } else {
+      bigint_t result = other;
+      result += *this;
+      return result;
+    }
   }
 
   bigint_t operator-(const bigint_t &other) const {
@@ -431,7 +440,7 @@ private:
   // Performs |this| += |other|.
   void AddMagnitudes(const LimbT *otherMag, size_t otherSize) {
     size_t thisSize = Size();
-    size_t newSize = std::max(thisSize, otherSize) + 1;
+    size_t newSize = std::max(thisSize, otherSize);
     ResizeToFit(newSize);
     bool carry = false;
     for (size_t i = 0; i < newSize; ++i) {
@@ -441,7 +450,13 @@ private:
       carry = AddCarry(a, b, carry, &res);
       At(i) = res;
     }
-    Normalize();
+
+    if (BIGINT_UNLIKELY(carry)) {
+      ResizeToFit(newSize + 1);
+      At(newSize) = 1; // Set the last limb to 1 to account for the carry.
+    }
+    // No need to normalize here; we never ResizeToFit() to a larger size than
+    // we need.
   }
 
   // Performs |this| -= |other|.
