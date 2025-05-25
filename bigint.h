@@ -197,10 +197,12 @@ public:
       ComparisonResult cmp = CompareMagnitudes(other.Data(), other.Size());
       if (cmp == ComparisonResult::kGreaterThan) {
         SubThisMagnitudes(other.Data(), other.Size());
+        Normalize();
         return *this;
       } else if (cmp == ComparisonResult::kLessThan) {
         SubOtherMagnitudes(other.Data(), other.Size());
         SetSign(other.Sign());
+        Normalize();
         return *this;
       } else {
         ResizeToFit(1);
@@ -461,6 +463,7 @@ private:
   }
 
   // Performs |this| -= |other|.
+  // NB: It is the caller's responsibility to normalize, if necessary.
   void SubThisMagnitudes(const LimbT *otherMag, size_t otherSize) {
     // TODO: name this better
     size_t thisSize = Size();
@@ -474,10 +477,10 @@ private:
       At(i) = res;
     }
     BIGINT_ASSUME_ASSERT(!borrow);
-    Normalize();
   }
 
   // Performs |this| = |other| - |this|.
+  // NB: It is the caller's responsibility to normalize, if necessary.
   void SubOtherMagnitudes(const LimbT *otherMag, size_t otherSize) {
     // TODO: name this better
     size_t thisSize = Size();
@@ -492,7 +495,6 @@ private:
       At(i) = res;
     }
     BIGINT_ASSUME_ASSERT(!borrow);
-    Normalize();
   }
 
   BIGINT_INLINE void Swap(bigint_t &other) noexcept {
