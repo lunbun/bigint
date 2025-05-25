@@ -175,6 +175,7 @@ public:
   ~bigint_t() noexcept {
     if (UseHeapBuf()) {
       delete[] u_.data_;
+      u_.data_ = nullptr;
     }
   }
 
