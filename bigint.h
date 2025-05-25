@@ -147,7 +147,14 @@ public:
   }
 
   BIGINT_INLINE bigint_t(bigint_t &&other) noexcept {
-    InitByMove(other.Data(), other.Size(), other.Capacity(), other.Sign());
+    size_ = other.size_;
+    if (other.UseLocalBuf()) {
+      std::copy_n(other.u_.local_buf_, other.Size(), u_.local_buf_);
+    } else {
+      u_.data_ = other.u_.data_;
+      u_.capacity_ = other.u_.capacity_;
+    }
+    DebugSanityCheck();
 
     // Invalidate the moved-from object.
     //
@@ -328,25 +335,6 @@ private:
       u_.data_ = new LimbT[size];
       u_.capacity_ = size;
       std::copy_n(data, size, u_.data_);
-    }
-    DebugSanityCheck();
-  }
-
-  // Initializes the bigint_t object by moving the data from the given pointer.
-  //
-  // NB: bigint_t takes ownership of the data pointer.
-  void InitByMove(LimbT *data, size_t size, size_t capacity, bool sign) {
-    size_ = size | (sign ? kSignBit : 0);
-    if (size < kLocalBufSize) {
-      size_ |= kLocalBufBit;
-      std::copy_n(data, size, u_.local_buf_);
-
-      // We have taken ownership of the data pointer, but we are using the local
-      // buffer. We need to delete the data pointer.
-      delete[] data;
-    } else {
-      u_.data_ = data;
-      u_.capacity_ = capacity;
     }
     DebugSanityCheck();
   }
