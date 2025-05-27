@@ -138,11 +138,13 @@ class bigint_t {
   bigint_t &operator+=(const bigint_t &other);
   bigint_t &operator-=(const bigint_t &other);
   bigint_t &operator*=(const bigint_t &other);
+  bigint_t &operator/=(const bigint_t &other);
 
   bigint_t operator-() const;
   bigint_t operator+(const bigint_t &other) const;
   bigint_t operator-(const bigint_t &other) const;
   bigint_t operator*(const bigint_t &other) const;
+  bigint_t operator/(const bigint_t &other) const;
 
   [[nodiscard]] static bigint_t FromString(const char *str, size_t len);
   [[nodiscard]] static bigint_t FromString(const std::string &str);
@@ -382,6 +384,13 @@ inline bigint_t &bigint_t::operator*=(const bigint_t &other) {
   return *this;
 }
 
+inline bigint_t &bigint_t::operator/=(const bigint_t &other) {
+  *this = *this / other;
+  return *this;
+}
+
+
+
 // Binary/unary operators
 inline bigint_t bigint_t::operator-() const {
   bigint_t result = *this;
@@ -424,6 +433,31 @@ inline bigint_t bigint_t::operator*(const bigint_t &other) const {
   result.Normalize();
   result.DebugSanityCheck();
   return result;
+}
+
+inline bigint_t bigint_t::operator/(const bigint_t &other) const {
+  size_t otherSize = other.Size();
+  if (otherSize == 1 && other.At(0) == 0) {
+    BIGINT_PANIC("Division by zero");
+  }
+
+  size_t size = Size();
+  if (size == 1 && At(0) == 0) {
+    return bigint_t{0, false};
+  }
+
+  if (size == 1 && otherSize == 1) {
+    // Fast path: single-limb division.
+    LimbT result = At(0) / other.At(0);
+    if (result == 0) {
+      return bigint_t{0, false};
+    } else {
+      return bigint_t{result, Sign() != other.Sign()};
+    }
+  }
+
+  // Slow path: multi-limb division.
+  BIGINT_UNIMPL();
 }
 
 
