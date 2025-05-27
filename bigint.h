@@ -130,6 +130,10 @@ class bigint_t {
   void Negate();
 
   bool operator==(const bigint_t &other) const;
+  bool operator>(const bigint_t &other) const;
+  bool operator<(const bigint_t &other) const;
+  bool operator>=(const bigint_t &other) const;
+  bool operator<=(const bigint_t &other) const;
 
   bigint_t &operator+=(const bigint_t &other);
   bigint_t &operator-=(const bigint_t &other);
@@ -301,6 +305,9 @@ inline bigint_t::~bigint_t() noexcept {
   }
 }
 
+
+
+// Misc operators
 BIGINT_INLINE bigint_t::operator LimbT() const { return At(0); }
 
 BIGINT_INLINE void bigint_t::Negate() { SetSign(!Sign()); }
@@ -309,6 +316,32 @@ inline bool bigint_t::operator==(const bigint_t &other) const {
   return Sign() == other.Sign() &&
          CompareMagnitudes(other.Data(), other.Size()) ==
              ComparisonResult::kEqual;
+}
+
+inline bool bigint_t::operator>(const bigint_t &other) const {
+  if (Sign() != other.Sign()) {
+    return Sign() < other.Sign();
+  }
+  ComparisonResult cmp = CompareMagnitudes(other.Data(), other.Size());
+  return (Sign() ? cmp == ComparisonResult::kLessThan
+                 : cmp == ComparisonResult::kGreaterThan);
+}
+
+inline bool bigint_t::operator<(const bigint_t &other) const {
+  if (Sign() != other.Sign()) {
+    return Sign() > other.Sign();
+  }
+  ComparisonResult cmp = CompareMagnitudes(other.Data(), other.Size());
+  return (Sign() ? cmp == ComparisonResult::kGreaterThan
+                 : cmp == ComparisonResult::kLessThan);
+}
+
+inline bool bigint_t::operator>=(const bigint_t &other) const {
+  return !(*this < other);
+}
+
+inline bool bigint_t::operator<=(const bigint_t &other) const {
+  return !(*this > other);
 }
 
 
